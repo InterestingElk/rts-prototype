@@ -1,0 +1,73 @@
+[gd_scene format=3 uid="uid://ypjvbwetq5eh"]
+
+[ext_resource type="Script" uid="uid://bwl1t1e1xi1m2" path="res://scripts/Main.gd" id="1_rarhs"]
+[ext_resource type="PackedScene" uid="uid://6e2a66mtlkfx" path="res://scenes/City.tscn" id="1_rvslj"]
+[ext_resource type="PackedScene" uid="uid://c30xa82pdeuha" path="res://scenes/Infantry.tscn" id="2_0bbpv"]
+[ext_resource type="Script" uid="uid://d3a2llxyouqg3" path="res://scripts/AIController.gd" id="3_0bbpv"]
+[ext_resource type="Script" uid="uid://cpx16jq3bmi4d" path="res://scripts/HUD.gd" id="5_vcsgt"]
+[ext_resource type="Script" path="res://scripts/CameraController.gd" id="6_camctl"]
+[ext_resource type="Script" path="res://scripts/SelectionManager.gd" id="7_selmgr"]
+[ext_resource type="Script" path="res://scripts/OilDeposit.gd" id="8_oildep"]
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_q8n75"]
+size = Vector2(100, 80)
+
+[node name="Main" type="Node3D" unique_id=53034203]
+script = ExtResource("1_rarhs")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1189587900]
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1652968504]
+transform = Transform3D(1, 0, 0, 0, 0.8452619, 0.5343523, 0, -0.5343523, 0.8452619, 0, 10, 15)
+script = ExtResource("6_camctl")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=794801200]
+mesh = SubResource("PlaneMesh_q8n75")
+
+[node name="PlayerCity" parent="." unique_id=816263412 instance=ExtResource("1_rvslj")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -35, 0, 0)
+infantry_scene = ExtResource("2_0bbpv")
+
+[node name="AICity" parent="." unique_id=182654043 instance=ExtResource("1_rvslj")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 35, 0, 0)
+infantry_scene = ExtResource("2_0bbpv")
+is_player_city = false
+
+[node name="AIController" type="Node" parent="AICity" unique_id=407208535 node_paths=PackedStringArray("ai_city", "player_city")]
+script = ExtResource("3_0bbpv")
+ai_city = NodePath("..")
+player_city = NodePath("../../PlayerCity")
+
+[node name="HUD" type="CanvasLayer" parent="." unique_id=994452507 node_paths=PackedStringArray("player_city")]
+script = ExtResource("5_vcsgt")
+player_city = NodePath("../PlayerCity")
+
+[node name="ManpowerLabel" type="Label" parent="HUD" unique_id=1785384518]
+offset_left = 20.0
+offset_top = 20.0
+offset_right = 60.0
+offset_bottom = 43.0
+
+[node name="SteelLabel" type="Label" parent="HUD" unique_id=1379399857]
+offset_left = 20.0
+offset_top = 50.0
+offset_right = 60.0
+offset_bottom = 73.0
+
+[node name="OilLabel" type="Label" parent="HUD" unique_id=1547200981]
+offset_left = 20.0
+offset_top = 80.0
+offset_right = 60.0
+offset_bottom = 103.0
+
+[node name="OilStatusLabel" type="Label" parent="HUD" unique_id=1547200982]
+offset_left = 20.0
+offset_top = 110.0
+offset_right = 60.0
+offset_bottom = 133.0
+
+[node name="SelectionManager" type="Node" parent="." unique_id=1706931204]
+script = ExtResource("7_selmgr")
+
+[node name="OilDeposit" type="Node3D" parent="." unique_id=1908341772]
+script = ExtResource("8_oildep")
