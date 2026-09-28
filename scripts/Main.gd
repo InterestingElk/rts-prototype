@@ -15,6 +15,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed:
 		if event.keycode == KEY_R:
 			player_city.try_recruit_infantry()
+		elif event.keycode == KEY_T:
+			player_city.try_recruit_tank()
 
 func _on_player_defeated() -> void:
 	if game_over:

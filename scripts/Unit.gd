@@ -8,6 +8,12 @@ extends CharacterBody3D
 @export var move_speed: float = 3.0
 @export var attack_range: float = 1.5   # how close it must get to actually hit something
 @export var notice_range: float = 8.0   # how far away it notices enemies (auto-engage)
+@export var turn_speed: float = 10.0    # how fast it rotates to face where it is going / shooting
+var attack_damage: float = 10.0
+var attack_interval: float = 1.0
+var formation_spacing: float = 1.6      # room this unit needs when a group is spread out
+var selection_radius: float = 0.7       # outer radius of the green selection ring
+var pick_radius: float = 0.7            # how close to its centre a click must land to select/target it
 
 # --- Health pools ---
 var manpower_health: float = 100.0
@@ -17,8 +23,6 @@ func get_effective_health() -> float:
 	return min(manpower_health, equipment_health)
 
 # --- Combat ---
-const ATTACK_DAMAGE: float = 10.0
-const ATTACK_INTERVAL: float = 1.0
 const MANPOWER_DAMAGE_SHARE: float = 0.6
 const EQUIPMENT_DAMAGE_SHARE: float = 0.4
 const DEFENSE_BONUS_RADIUS: float = 15.0
@@ -41,10 +45,29 @@ var attack_timer: float = 0.0
 var _stuck_time: float = 0.0
 var _selection_ring: MeshInstance3D = null
 
+const PLAYER_COLOR: Color = Color(0.3, 0.55, 1.0)
+const ENEMY_COLOR: Color = Color(0.9, 0.3, 0.3)
+
 signal died(unit: Node3D)
 
 func _ready() -> void:
 	add_to_group("player_units" if is_player_unit else "ai_units")
+	_apply_team_color()
+
+# Placeholder look: tint every mesh on the unit blue (yours) or red (enemy)
+func _apply_team_color() -> void:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = PLAYER_COLOR if is_player_unit else ENEMY_COLOR
+	for child in get_children():
+		if child is MeshInstance3D:
+			child.material_override = mat
+
+# Hooks for vehicles (see Tank.gd). Infantry can always move and burns nothing.
+func _can_move() -> bool:
+	return true
+
+func _on_moved(_delta: float) -> void:
+	pass
 
 func _physics_process(delta: float) -> void:
 	match order:
@@ -163,6 +186,15 @@ func _move_toward(pos: Vector3, delta: float) -> void:
 		velocity = Vector3.ZERO
 		return
 
+	_face_direction(flat, delta)
+
+	# Out of fuel: stand still but keep the order, so it resumes by itself when fuel returns.
+	# Waiting for fuel is not the same as being blocked, so the stuck timer stays at zero.
+	if not _can_move():
+		velocity = Vector3.ZERO
+		_stuck_time = 0.0
+		return
+
 	velocity = flat.normalized() * move_speed
 	var before := global_position
 	move_and_slide()
@@ -173,14 +205,22 @@ func _move_toward(pos: Vector3, delta: float) -> void:
 		_stuck_time += delta
 	else:
 		_stuck_time = 0.0
+		_on_moved(delta) # only real movement costs fuel
+
+func _face_direction(direction: Vector3, delta: float) -> void:
+	if direction.length() < 0.001:
+		return
+	var target_angle := atan2(-direction.x, -direction.z) # units face -Z
+	rotation.y = lerp_angle(rotation.y, target_angle, clampf(turn_speed * delta, 0.0, 1.0))
 
 func _try_attack(enemy: Node3D, delta: float) -> void:
 	velocity = Vector3.ZERO
+	_face_direction(enemy.global_position - global_position, delta)
 	attack_timer -= delta
 	if attack_timer <= 0.0:
-		attack_timer = ATTACK_INTERVAL
+		attack_timer = attack_interval
 		if enemy.has_method("take_damage"):
-			enemy.take_damage(ATTACK_DAMAGE)
+			enemy.take_damage(attack_damage)
 
 func take_damage(amount: float) -> void:
 	var actual_amount := amount
@@ -233,8 +273,8 @@ func _find_nearest_city() -> Node3D:
 func _make_selection_ring() -> MeshInstance3D:
 	var ring := MeshInstance3D.new()
 	var torus := TorusMesh.new()
-	torus.inner_radius = 0.55
-	torus.outer_radius = 0.7
+	torus.inner_radius = selection_radius - 0.15
+	torus.outer_radius = selection_radius
 	ring.mesh = torus
 
 	var mat := StandardMaterial3D.new()
@@ -256,6 +296,9 @@ static func formation_for(units: Array, center: Vector3, spacing: float = 1.6) -
 	var count: int = units.size()
 	if count == 0:
 		return result
+
+	for unit in units:
+		spacing = maxf(spacing, unit.formation_spacing)
 
 	var cols: int = ceili(sqrt(float(count)))
 	var rows: int = ceili(float(count) / float(cols))

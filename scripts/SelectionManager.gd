@@ -201,7 +201,7 @@ func _pick_unit_at(screen_pos: Vector2, group: String) -> Unit:
 		if along <= 0.0:
 			continue
 		var miss: float = (to_unit - direction * along).length()
-		var tolerance: float = maxf(PICK_MIN_RADIUS, along * PICK_ANGULAR_RADIUS)
+		var tolerance: float = maxf(maxf(PICK_MIN_RADIUS, unit.pick_radius), along * PICK_ANGULAR_RADIUS)
 		if miss <= tolerance and miss < best_miss:
 			best_miss = miss
 			best = unit
@@ -262,9 +262,9 @@ func _on_overlay_draw() -> void:
 		_overlay.draw_rect(rect, Color(0.3, 1.0, 0.4, 0.9), false, 2.0)
 
 	var font := ThemeDB.fallback_font
-	_overlay.draw_string(font, Vector2(20.0, 170.0), "Selected: %d" % selected.size(),
+	_overlay.draw_string(font, Vector2(20.0, 200.0), "Selected: %d" % selected.size(),
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0.8, 1.0, 0.8))
 	if attack_move_pending:
-		_overlay.draw_string(font, Vector2(20.0, 194.0),
+		_overlay.draw_string(font, Vector2(20.0, 224.0),
 			"ATTACK-MOVE: left-click a location (right-click or Esc to cancel)",
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1.0, 0.8, 0.3))
