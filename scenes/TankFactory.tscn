@@ -1,0 +1,13 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/TankFactory.gd" id="1_tankfac"]
+
+[sub_resource type="BoxMesh" id="BoxMesh_tankfac"]
+size = Vector3(4, 2.5, 4)
+
+[node name="TankFactory" type="Node3D"]
+script = ExtResource("1_tankfac")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.25, 0)
+mesh = SubResource("BoxMesh_tankfac")

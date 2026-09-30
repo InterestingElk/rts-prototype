@@ -1,0 +1,13 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/Barracks.gd" id="1_barracks"]
+
+[sub_resource type="BoxMesh" id="BoxMesh_barracks"]
+size = Vector3(3, 2, 3)
+
+[node name="Barracks" type="Node3D"]
+script = ExtResource("1_barracks")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
+mesh = SubResource("BoxMesh_barracks")

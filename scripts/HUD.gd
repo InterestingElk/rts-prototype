@@ -8,6 +8,7 @@ extends CanvasLayer
 @export var player_city: Node3D
 
 var _deposit: OilDeposit = null
+var _selection_manager: Node = null
 var production_label: Label
 var hint_label: Label
 
@@ -28,12 +29,12 @@ func _ready() -> void:
 	hint_label = Label.new()
 	hint_label.name = "HintLabel"
 	add_child(hint_label)
-	if player_city:
-		hint_label.text = "R  Infantry (%d manpower, %d steel)     T  Tank (%d manpower, %d steel, %d oil)     A  Attack-move     S  Stop" % [
-			player_city.INFANTRY_MANPOWER_COST, player_city.INFANTRY_STEEL_COST,
-			player_city.TANK_MANPOWER_COST, player_city.TANK_STEEL_COST, player_city.TANK_OIL_COST]
+	# NOT looked up here: SelectionManager may not have registered itself yet this frame
+	# (node ready-order in the scene tree isn't guaranteed), so this is resolved lazily below.
 
 func _process(_delta: float) -> void:
+	if _selection_manager == null:
+		_selection_manager = get_tree().get_first_node_in_group("selection_managers")
 	_refresh_production()
 	hint_label.position = Vector2(20.0, get_viewport().get_visible_rect().size.y - 34.0)
 
@@ -43,6 +44,15 @@ func _process(_delta: float) -> void:
 		if _deposit != null:
 			_deposit.status_changed.connect(_on_oil_status_changed)
 	_refresh_oil_status() # every frame, so the capture percentage ticks up smoothly
+
+func _building_hint(b: Building) -> String:
+	var parts: Array[String] = []
+	for o in b.recruit_options:
+		var cost := "%d manpower, %d steel" % [o.get("manpower", 0.0), o.get("steel", 0.0)]
+		if o.get("oil", 0.0) > 0.0:
+			cost += ", %d oil" % o["oil"]
+		parts.append("%s  %s (%s)" % [OS.get_keycode_string(o["keycode"]), o["name"], cost])
+	return "   ".join(parts)
 
 func _on_resources_changed(manpower: float, steel: float) -> void:
 	manpower_label.text = "Manpower: %d" % floor(manpower)
@@ -57,12 +67,17 @@ func _on_oil_changed(oil: float) -> void:
 		oil_label.text = "Oil: %d" % floor(oil)
 
 func _refresh_production() -> void:
-	if player_city == null:
+	var selected: Building = _selection_manager.selected_building if _selection_manager else null
+	if selected == null:
+		production_label.text = "No building selected"
+		hint_label.text = "Click your Barracks or Tank Factory to select it, then use its hotkeys.     A  Attack-move     S  Stop"
 		return
-	if player_city.is_recruiting:
-		production_label.text = "Building: %s (%ds)" % [player_city.recruit_name, ceili(player_city.recruit_timer)]
+
+	hint_label.text = _building_hint(selected) + "     A  Attack-move     S  Stop"
+	if selected.is_recruiting:
+		production_label.text = "%s: building %s (%ds)" % [selected.building_name, selected.recruit_name, ceili(selected.recruit_timer)]
 	else:
-		production_label.text = "Building: nothing"
+		production_label.text = "%s: idle" % selected.building_name
 
 func _on_oil_status_changed(_controller: int, _contested: bool) -> void:
 	_refresh_oil_status()

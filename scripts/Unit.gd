@@ -9,8 +9,20 @@ extends CharacterBody3D
 @export var attack_range: float = 1.5   # how close it must get to actually hit something
 @export var notice_range: float = 8.0   # how far away it notices enemies (auto-engage)
 @export var turn_speed: float = 10.0    # how fast it rotates to face where it is going / shooting
-var attack_damage: float = 10.0
 var attack_interval: float = 1.0
+
+# --- Attack profile (soft/hard split; overridden per unit type) ---
+# HARD_INFANTRY = infantry-carried AT (rifles, grenades, AT infantry, flak).
+# HARD_VEHICLE  = vehicle-mounted AT (tank guns, dedicated AT guns, tank destroyers).
+enum HardType { HARD_INFANTRY, HARD_VEHICLE }
+var soft_attack: float = 10.0
+var hard_attack: float = 2.0
+var hard_type: HardType = HardType.HARD_INFANTRY
+
+# --- Defense profile (how much of each incoming damage type is reduced) ---
+var soft_resist: float = 0.0
+var hard_infantry_resist: float = 0.65
+var hard_vehicle_resist: float = 0.5
 var formation_spacing: float = 1.6      # room this unit needs when a group is spread out
 var selection_radius: float = 0.7       # outer radius of the green selection ring
 var pick_radius: float = 0.7            # how close to its centre a click must land to select/target it
@@ -220,12 +232,13 @@ func _try_attack(enemy: Node3D, delta: float) -> void:
 	if attack_timer <= 0.0:
 		attack_timer = attack_interval
 		if enemy.has_method("take_damage"):
-			enemy.take_damage(attack_damage)
+			enemy.take_damage(soft_attack, hard_attack, hard_type)
 
-func take_damage(amount: float) -> void:
-	var actual_amount := amount
+func take_damage(atk_soft: float, atk_hard: float, atk_hard_type: HardType) -> void:
+	var hard_resist: float = hard_infantry_resist if atk_hard_type == HardType.HARD_INFANTRY else hard_vehicle_resist
+	var actual_amount: float = atk_soft * (1.0 - soft_resist) + atk_hard * (1.0 - hard_resist)
 	if _is_near_own_city():
-		actual_amount = amount * (1.0 - DEFENSE_DAMAGE_REDUCTION)
+		actual_amount *= (1.0 - DEFENSE_DAMAGE_REDUCTION)
 
 	var manpower_lost: float = actual_amount * MANPOWER_DAMAGE_SHARE
 	var equipment_lost: float = actual_amount * EQUIPMENT_DAMAGE_SHARE

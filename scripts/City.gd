@@ -9,25 +9,7 @@ var oil: float = 20.0   # small starting stock; the oil field in the middle of t
 const MANPOWER_REGEN_PER_SEC: float = 2.0 / 60.0
 const STEEL_INCOME_PER_SEC: float = 5.0 / 60.0
 
-# --- Infantry recruit cost/time ---
-const INFANTRY_MANPOWER_COST: float = 15.0
-const INFANTRY_STEEL_COST: float = 10.0
-const INFANTRY_RECRUIT_TIME: float = 20.0
-
-# --- Tank recruit cost/time (trades manpower for steel + oil) ---
-const TANK_MANPOWER_COST: float = 20.0
-const TANK_STEEL_COST: float = 40.0
-const TANK_OIL_COST: float = 10.0
-const TANK_RECRUIT_TIME: float = 40.0
-
-@export var infantry_scene: PackedScene
-@export var tank_scene: PackedScene = preload("res://scenes/Tank.tscn")
 @export var is_player_city: bool = true
-
-var recruit_timer: float = 0.0
-var is_recruiting: bool = false
-var recruit_name: String = ""            # what is currently being built (for the HUD)
-var _recruit_scene: PackedScene = null   # the scene that will be spawned when the timer ends
 
 const OVERRUN_UNIT_COUNT: int = 5
 const OVERRUN_CHECK_RADIUS: float = 15.0
@@ -39,8 +21,7 @@ const TRICKLE_BACK_DURATION: float = 60.0
 var trickle_back_batches: Array = [] # each entry: {amount: float}
 
 signal resources_changed(manpower: float, steel: float)
-signal infantry_recruited(unit: Node3D)
-signal unit_recruited(unit: Node3D)
+signal infantry_recruited(unit: Node3D)   # emitted by Barracks on this city's behalf; AI wave logic listens for it
 signal oil_changed(oil: float)
 
 func _ready() -> void:
@@ -61,56 +42,6 @@ func _process(delta: float) -> void:
 
 	resources_changed.emit(manpower, steel)
 
-	if is_recruiting:
-		recruit_timer -= delta
-		if recruit_timer <= 0.0:
-			_finish_recruit()
-
-func try_recruit_infantry() -> bool:
-	if is_recruiting:
-		return false
-	if manpower < INFANTRY_MANPOWER_COST or steel < INFANTRY_STEEL_COST:
-		return false
-
-	manpower -= INFANTRY_MANPOWER_COST
-	steel -= INFANTRY_STEEL_COST
-	is_recruiting = true
-	recruit_timer = INFANTRY_RECRUIT_TIME
-	_recruit_scene = infantry_scene
-	recruit_name = "Infantry"
-	resources_changed.emit(manpower, steel)
-	return true
-
-func try_recruit_tank() -> bool:
-	if is_recruiting:
-		return false
-	if manpower < TANK_MANPOWER_COST or steel < TANK_STEEL_COST or oil < TANK_OIL_COST:
-		return false
-
-	manpower -= TANK_MANPOWER_COST
-	steel -= TANK_STEEL_COST
-	oil -= TANK_OIL_COST
-	is_recruiting = true
-	recruit_timer = TANK_RECRUIT_TIME
-	_recruit_scene = tank_scene
-	recruit_name = "Tank"
-	resources_changed.emit(manpower, steel)
-	oil_changed.emit(oil)
-	return true
-
-func _finish_recruit() -> void:
-	is_recruiting = false
-	var unit = _recruit_scene.instantiate()
-	unit.is_player_unit = is_player_city
-	get_tree().current_scene.add_child(unit)
-
-	var direction_x: float = 1.0 if is_player_city else -1.0
-	var offset := Vector3(direction_x * (6 + randf_range(-2.0, 2.0)), 0, randf_range(-4.0, 4.0))
-	unit.global_position = global_position + offset
-	if _recruit_scene == infantry_scene:
-		infantry_recruited.emit(unit)   # the AI wave logic listens for this one
-	unit_recruited.emit(unit)
-
 func add_oil(amount: float) -> void:
 	oil += amount
 	oil_changed.emit(oil)
@@ -122,7 +53,7 @@ func spend_oil(amount: float) -> void:
 
 func start_trickle_back(amount: float) -> void:
 	trickle_back_batches.append({"amount": amount})
-	
+
 func _check_overrun() -> void:
 	var enemy_group := "ai_units" if is_player_city else "player_units"
 	var own_group := "player_units" if is_player_city else "ai_units"

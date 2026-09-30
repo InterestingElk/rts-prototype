@@ -1,10 +1,12 @@
 extends Node
 
 @export var ai_city: Node3D # the City this controls
+@export var ai_barracks: Building # where infantry is actually recruited from
 @export var player_city: Node3D # attack target
 
 var wave_threshold: int = 5
 var wave_units: Array[Node3D] = []
+var _active: bool = true   # set false to halt recruiting/attacking (used by tests; not exposed in play)
 
 func _ready() -> void:
 	print("AIController ready!")
@@ -16,10 +18,13 @@ func _pick_new_threshold() -> void:
 	wave_threshold = randi_range(3, 7)
 
 func _try_recruit_loop() -> void:
-	# Keep attempting to recruit; City itself blocks double-recruiting
+	# Keep attempting to recruit; Building itself blocks double-recruiting.
+	# Uses a SceneTreeTimer, which set_process(false) on this node does NOT stop -- _active is
+	# the actual off switch.
 	while true:
 		await get_tree().create_timer(1.0).timeout
-		ai_city.try_recruit_infantry()
+		if _active:
+			ai_barracks.try_recruit("infantry")
 
 func _on_infantry_recruited(unit: Node3D) -> void:
 	wave_units.append(unit)

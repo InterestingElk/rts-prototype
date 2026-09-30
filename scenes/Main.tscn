@@ -8,6 +8,8 @@
 [ext_resource type="Script" path="res://scripts/CameraController.gd" id="6_camctl"]
 [ext_resource type="Script" path="res://scripts/SelectionManager.gd" id="7_selmgr"]
 [ext_resource type="Script" path="res://scripts/OilDeposit.gd" id="8_oildep"]
+[ext_resource type="PackedScene" path="res://scenes/Barracks.tscn" id="9_barracks"]
+[ext_resource type="PackedScene" path="res://scenes/TankFactory.tscn" id="10_tankfac"]
 
 [sub_resource type="PlaneMesh" id="PlaneMesh_q8n75"]
 size = Vector2(100, 80)
@@ -33,9 +35,10 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 35, 0, 0)
 infantry_scene = ExtResource("2_0bbpv")
 is_player_city = false
 
-[node name="AIController" type="Node" parent="AICity" unique_id=407208535 node_paths=PackedStringArray("ai_city", "player_city")]
+[node name="AIController" type="Node" parent="AICity" unique_id=407208535 node_paths=PackedStringArray("ai_city", "ai_barracks", "player_city")]
 script = ExtResource("3_0bbpv")
 ai_city = NodePath("..")
+ai_barracks = NodePath("../../AIBarracks")
 player_city = NodePath("../../PlayerCity")
 
 [node name="HUD" type="CanvasLayer" parent="." unique_id=994452507 node_paths=PackedStringArray("player_city")]
@@ -71,3 +74,21 @@ script = ExtResource("7_selmgr")
 
 [node name="OilDeposit" type="Node3D" parent="." unique_id=1908341772]
 script = ExtResource("8_oildep")
+
+[node name="PlayerBarracks" parent="." instance=ExtResource("9_barracks") node_paths=PackedStringArray("owning_city")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -25, 0, 8)
+owning_city = NodePath("../PlayerCity")
+
+[node name="PlayerTankFactory" parent="." instance=ExtResource("10_tankfac") node_paths=PackedStringArray("owning_city")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -25, 0, -8)
+owning_city = NodePath("../PlayerCity")
+
+[node name="AIBarracks" parent="." instance=ExtResource("9_barracks") node_paths=PackedStringArray("owning_city")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 25, 0, 8)
+owning_city = NodePath("../AICity")
+is_player_building = false
+
+[node name="AITankFactory" parent="." instance=ExtResource("10_tankfac") node_paths=PackedStringArray("owning_city")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 25, 0, -8)
+owning_city = NodePath("../AICity")
+is_player_building = false

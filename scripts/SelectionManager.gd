@@ -1,10 +1,11 @@
 extends Node
 
 # Classic RTS controls:
-#   Left click / drag box ... select your units   (Shift = add to selection)
+#   Left click / drag box ... select your units, or click a building to select it (Shift = add to selection)
 #   Right click ............. ground: move   |   enemy unit: attack it   |   enemy city: attack-move onto it
 #   A, then left click ...... attack-move       (right click or Esc cancels)
 #   S ....................... stop
+#   Building hotkeys (I, G, T, ...) only do anything while that specific building is selected.
 
 # Map limits so orders can't send units off the edge (keep in sync with the ground plane / camera)
 @export var map_half_width: float = 50.0
@@ -15,9 +16,11 @@ const PICK_MIN_RADIUS: float = 0.7         # world units, for clicking on small 
 const PICK_ANGULAR_RADIUS: float = 0.03    # grows with distance so units stay clickable zoomed out
 const CITY_PICK_RADIUS: float = 3.5        # ground distance from a city's centre that counts as clicking it
 const CITY_APPROACH_DISTANCE: float = 4.0  # how far in front of an enemy city attackers gather
+const BUILDING_PICK_RADIUS: float = 3.5    # ground distance from a building's centre that counts as clicking it
 
 var selected: Array = []
 var attack_move_pending: bool = false
+var selected_building: Building = null
 
 var _dragging: bool = false
 var _drag_start: Vector2 = Vector2.ZERO
@@ -25,6 +28,7 @@ var _drag_current: Vector2 = Vector2.ZERO
 var _overlay: Control = null
 
 func _ready() -> void:
+	add_to_group("selection_managers")
 	# Screen overlay (drag box + status text), built here so no extra scene setup is needed
 	var canvas := CanvasLayer.new()
 	canvas.layer = 5
@@ -59,6 +63,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			_drag_current = event.position
 
 	elif event is InputEventKey and event.pressed and not event.echo:
+		if selected_building != null and is_instance_valid(selected_building):
+			selected_building.handle_hotkey(event.keycode)
+			return  # a selected building owns the keyboard: A/S below are for unit orders, not buildings
 		match event.keycode:
 			KEY_A:
 				if not selected.is_empty():
@@ -86,6 +93,17 @@ func _on_left_released(pos: Vector2) -> void:
 	_dragging = false
 	_drag_current = pos
 
+	# A plain click (not a drag) on one of our own buildings selects that building instead
+	# of a unit; buildings and units are never selected together.
+	if _drag_start.distance_to(pos) < DRAG_THRESHOLD:
+		var ground: Variant = _ground_point(pos)
+		if ground != null:
+			var building := _own_building_near(ground)
+			if building != null:
+				_set_selection([])
+				_set_selected_building(building)
+				return
+
 	var additive: bool = Input.is_key_pressed(KEY_SHIFT)
 	var picked: Array = []
 
@@ -96,11 +114,14 @@ func _on_left_released(pos: Vector2) -> void:
 	else:
 		picked = _units_in_box(Rect2(_drag_start, Vector2.ZERO).expand(pos))
 
-	# Without Shift the new pick replaces the selection (so clicking empty ground clears it)
+	# Without Shift the new pick replaces the selection (so clicking empty ground clears it,
+	# and clicking a unit or empty ground also clears any selected building)
 	if additive:
 		for unit in selected:
 			if not picked.has(unit):
 				picked.append(unit)
+	else:
+		_set_selected_building(null)
 
 	_set_selection(picked)
 
@@ -160,6 +181,23 @@ func _order_stop() -> void:
 # ---------------------------------------------------------------------------
 # Selection helpers
 # ---------------------------------------------------------------------------
+
+func _set_selected_building(building: Building) -> void:
+	if selected_building != null and is_instance_valid(selected_building):
+		selected_building.set_selected(false)
+	selected_building = building
+	if selected_building != null:
+		selected_building.set_selected(true)
+
+func _own_building_near(ground: Vector3) -> Building:
+	for b: Building in get_tree().get_nodes_in_group("player_buildings"):
+		if not is_instance_valid(b):
+			continue
+		var flat := b.global_position - ground
+		flat.y = 0.0
+		if flat.length() <= BUILDING_PICK_RADIUS:
+			return b
+	return null
 
 func _set_selection(units: Array) -> void:
 	for unit in selected:

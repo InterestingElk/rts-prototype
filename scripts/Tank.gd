@@ -19,11 +19,19 @@ func _init() -> void:
 	move_speed = 5.0        # infantry: 3.0
 	attack_range = 4.0      # infantry: 1.5, so a tank shoots first while infantry close in
 	notice_range = 12.0     # infantry: 8.0
-	attack_damage = 15.0    # infantry: 10.0
 	turn_speed = 4.0
 	formation_spacing = 3.2
 	selection_radius = 1.7  # the ring must be wider than the 1.4 x 2.4 hull or it hides inside it
 	pick_radius = 1.4       # the hull is long, so clicks on the front or rear should still hit
+
+	# Soft/hard attack profile (medium tank tier, locked in the design doc).
+	# Light/heavy tank tiers are future work and would subclass Tank the same way this subclasses Unit.
+	soft_attack = 12.0
+	hard_attack = 8.0
+	hard_type = HardType.HARD_VEHICLE
+	soft_resist = 0.4
+	hard_infantry_resist = 0.55
+	hard_vehicle_resist = 0.35
 
 func _ready() -> void:
 	super._ready()
