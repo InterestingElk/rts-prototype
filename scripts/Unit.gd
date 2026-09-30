@@ -47,7 +47,13 @@ const STUCK_TIMEOUT: float = 0.6      # give up on a destination if blocked this
 # --- Orders ---
 # MOVE: walk there, ignore enemies.  ATTACK_MOVE: walk there, fight anything met on the way.
 # ATTACK_TARGET: chase and fight one specific enemy.  NONE: idle (still auto-engages in range).
+#
+# Stance while idle: a unit that has just finished an order (or was never given one) chases any
+# enemy it notices. After Stop (S) it HOLDS GROUND instead: it only shoots enemies that come
+# within its attack range and never walks after them. Any new order ends the hold.
 enum Order { NONE, MOVE, ATTACK_MOVE, ATTACK_TARGET }
+
+var hold_position: bool = false
 
 var order: Order = Order.NONE
 var order_position: Vector3 = Vector3.ZERO
@@ -97,24 +103,29 @@ func _physics_process(delta: float) -> void:
 # ---------------------------------------------------------------------------
 
 func move_to(pos: Vector3) -> void:
+	hold_position = false
 	order = Order.MOVE
 	order_position = pos
 	order_target = null
 	_stuck_time = 0.0
 
 func attack_move_to(pos: Vector3) -> void:
+	hold_position = false
 	order = Order.ATTACK_MOVE
 	order_position = pos
 	order_target = null
 	_stuck_time = 0.0
 
 func attack_unit(enemy: Node3D) -> void:
+	hold_position = false
 	order = Order.ATTACK_TARGET
 	order_target = enemy
 	_stuck_time = 0.0
 
+# Stop = drop the current order and hold ground (see the stance note above)
 func stop() -> void:
 	_finish_order()
+	hold_position = true
 
 func set_selected(value: bool) -> void:
 	if value and _selection_ring == null:
@@ -150,6 +161,12 @@ func _process_attack_target(delta: float) -> void:
 	_engage(order_target, delta)
 
 func _process_idle(delta: float) -> void:
+	if hold_position:
+		# Stand ground: only fire at what is already inside attack range, never move
+		var target := _find_nearest_enemy(attack_range)
+		if target != null:
+			_try_attack(target, delta)
+		return
 	var enemy := _find_nearest_enemy()
 	if enemy != null:
 		_engage(enemy, delta)
@@ -176,10 +193,11 @@ func _engage(enemy: Node3D, delta: float) -> void:
 	else:
 		_try_attack(enemy, delta)
 
-func _find_nearest_enemy() -> Node3D:
+# Nearest enemy within max_range (defaults to notice_range when max_range is left negative)
+func _find_nearest_enemy(max_range: float = -1.0) -> Node3D:
 	var enemy_group := "ai_units" if is_player_unit else "player_units"
 	var nearest: Node3D = null
-	var nearest_dist: float = notice_range
+	var nearest_dist: float = notice_range if max_range < 0.0 else max_range
 
 	for enemy in get_tree().get_nodes_in_group(enemy_group):
 		if not is_instance_valid(enemy):
