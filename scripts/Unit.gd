@@ -55,6 +55,10 @@ enum Order { NONE, MOVE, ATTACK_MOVE, ATTACK_TARGET }
 
 var hold_position: bool = false
 
+# Formation extras (set by formation_order, cleared by any other order)
+var order_facing: Vector3 = Vector3.ZERO   # direction to face once the order is done (zero = don't care)
+var speed_limit: float = -1.0              # cap on march speed so a group arrives together (<= 0 = none)
+
 var order: Order = Order.NONE
 var order_position: Vector3 = Vector3.ZERO
 var order_target: Node3D = null
@@ -102,29 +106,37 @@ func _physics_process(delta: float) -> void:
 # Public order API (used by SelectionManager and AIController)
 # ---------------------------------------------------------------------------
 
-func move_to(pos: Vector3) -> void:
+func move_to(pos: Vector3, facing: Vector3 = Vector3.ZERO, limit: float = -1.0) -> void:
 	hold_position = false
 	order = Order.MOVE
 	order_position = pos
 	order_target = null
+	order_facing = facing
+	speed_limit = limit
 	_stuck_time = 0.0
 
-func attack_move_to(pos: Vector3) -> void:
+func attack_move_to(pos: Vector3, facing: Vector3 = Vector3.ZERO, limit: float = -1.0) -> void:
 	hold_position = false
 	order = Order.ATTACK_MOVE
 	order_position = pos
 	order_target = null
+	order_facing = facing
+	speed_limit = limit
 	_stuck_time = 0.0
 
 func attack_unit(enemy: Node3D) -> void:
 	hold_position = false
 	order = Order.ATTACK_TARGET
 	order_target = enemy
+	order_facing = Vector3.ZERO
+	speed_limit = -1.0
 	_stuck_time = 0.0
 
 # Stop = drop the current order and hold ground (see the stance note above)
 func stop() -> void:
 	_finish_order()
+	order_facing = Vector3.ZERO
+	speed_limit = -1.0
 	hold_position = true
 
 func set_selected(value: bool) -> void:
@@ -142,7 +154,7 @@ func _process_move(delta: float) -> void:
 	if _at_destination():
 		_finish_order()
 		return
-	_move_toward(order_position, delta)
+	_move_toward(order_position, delta, true)
 
 func _process_attack_move(delta: float) -> void:
 	var enemy := _find_nearest_enemy()
@@ -152,7 +164,7 @@ func _process_attack_move(delta: float) -> void:
 	if _at_destination():
 		_finish_order()
 		return
-	_move_toward(order_position, delta)
+	_move_toward(order_position, delta, true)
 
 func _process_attack_target(delta: float) -> void:
 	if order_target == null or not is_instance_valid(order_target):
@@ -166,10 +178,14 @@ func _process_idle(delta: float) -> void:
 		var target := _find_nearest_enemy(attack_range)
 		if target != null:
 			_try_attack(target, delta)
+		else:
+			_face_direction(order_facing, delta)
 		return
 	var enemy := _find_nearest_enemy()
 	if enemy != null:
 		_engage(enemy, delta)
+	else:
+		_face_direction(order_facing, delta) # settle into the formation's facing
 
 func _finish_order() -> void:
 	order = Order.NONE
@@ -209,7 +225,9 @@ func _find_nearest_enemy(max_range: float = -1.0) -> Node3D:
 
 	return nearest
 
-func _move_toward(pos: Vector3, delta: float) -> void:
+# use_limit: marching to an order destination, so the formation's speed cap applies
+# (chasing an enemy always runs at full speed).
+func _move_toward(pos: Vector3, delta: float, use_limit: bool = false) -> void:
 	var flat := pos - global_position
 	flat.y = 0.0
 	if flat.length() < 0.001:
@@ -225,13 +243,16 @@ func _move_toward(pos: Vector3, delta: float) -> void:
 		_stuck_time = 0.0
 		return
 
-	velocity = flat.normalized() * move_speed
+	var speed: float = move_speed
+	if use_limit and speed_limit > 0.0:
+		speed = minf(move_speed, speed_limit)
+	velocity = flat.normalized() * speed
 	var before := global_position
 	move_and_slide()
 
 	# Track being blocked (e.g. by friendly units) so move orders can give up gracefully
 	var moved := before.distance_to(global_position)
-	if moved < move_speed * delta * 0.25:
+	if moved < speed * delta * 0.25:
 		_stuck_time += delta
 	else:
 		_stuck_time = 0.0
@@ -318,44 +339,88 @@ func _make_selection_ring() -> MeshInstance3D:
 	return ring
 
 # ---------------------------------------------------------------------------
-# Formation helper: spread a group around a point so units don't all pile onto one spot.
-# Returns one destination per unit (same order as `units`), each unit taking the nearest free slot.
+# Formations
+#
+# A group is laid out as a block of ranks facing `facing`: wider than it is deep, front rank
+# first. Units are matched to slots by where they currently stand (front-most units take the
+# front rank, left-most take the left of their rank) so they don't cross over each other.
 # ---------------------------------------------------------------------------
 
-static func formation_for(units: Array, center: Vector3, spacing: float = 1.6) -> Array[Vector3]:
-	var result: Array[Vector3] = []
+const FORMATION_ASPECT: float = 2.0         # width is about sqrt(count * aspect) units
+const MIN_FORMATION_SPEED_SHARE: float = 0.3  # slowest a unit is ever throttled, as a share of its top speed
+
+# The facing to use: the one given, otherwise the direction the group has to travel.
+static func resolve_facing(units: Array, center: Vector3, facing: Vector3) -> Vector3:
+	var f := Vector3(facing.x, 0.0, facing.z)
+	if f.length() < 0.001 and not units.is_empty():
+		var centroid := Vector3.ZERO
+		for u in units:
+			centroid += u.global_position
+		centroid /= float(units.size())
+		f = Vector3(center.x - centroid.x, 0.0, center.z - centroid.z)
+	if f.length() < 0.001:
+		f = Vector3(0.0, 0.0, -1.0)
+	return f.normalized()
+
+# One destination per unit (same order as `units`)
+static func formation_slots(units: Array, center: Vector3, facing: Vector3) -> Array[Vector3]:
 	var count: int = units.size()
+	var slots: Array[Vector3] = []
 	if count == 0:
-		return result
+		return slots
 
-	for unit in units:
-		spacing = maxf(spacing, unit.formation_spacing)
+	var f: Vector3 = resolve_facing(units, center, facing)
+	var r: Vector3 = f.cross(Vector3.UP).normalized() # the group's right-hand side
 
-	var cols: int = ceili(sqrt(float(count)))
+	var spacing: float = 1.6
+	for u in units:
+		spacing = maxf(spacing, u.formation_spacing)
+
+	var cols: int = mini(ceili(sqrt(float(count) * FORMATION_ASPECT)), count)
 	var rows: int = ceili(float(count) / float(cols))
 
-	var slots: Array[Vector3] = []
-	for i in count:
-		var col: int = i % cols
-		var row: int = floori(float(i) / float(cols))
-		var offset := Vector3(
-			(float(col) - (cols - 1) * 0.5) * spacing,
-			0.0,
-			(float(row) - (rows - 1) * 0.5) * spacing
-		)
-		slots.append(center + offset)
+	# Front-most units first, then split into ranks and order each rank left to right
+	var idx: Array = range(count)
+	idx.sort_custom(func(a, b): return units[a].global_position.dot(f) > units[b].global_position.dot(f))
 
-	var remaining: Array[Vector3] = []
-	remaining.assign(slots)
-	for unit in units:
-		var best_index: int = 0
-		var best_dist: float = INF
-		for j in remaining.size():
-			var d: float = unit.global_position.distance_squared_to(remaining[j])
-			if d < best_dist:
-				best_dist = d
-				best_index = j
-		result.append(remaining[best_index])
-		remaining.remove_at(best_index)
+	slots.resize(count)
+	for row in rows:
+		var first: int = row * cols
+		var last: int = mini(first + cols, count)
+		var rank: Array = idx.slice(first, last)
+		rank.sort_custom(func(a, b): return units[a].global_position.dot(r) < units[b].global_position.dot(r))
+		var in_rank: int = rank.size()
+		var depth: float = (float(rows - 1) * 0.5 - float(row)) * spacing
+		for j in in_rank:
+			var lateral: float = (float(j) - float(in_rank - 1) * 0.5) * spacing
+			slots[rank[j]] = center + r * lateral + f * depth
+	return slots
 
-	return result
+# Order a whole group to a point in formation. Everyone is throttled so the group arrives
+# together (a move) or keeps pace with its slowest member (an attack-move).
+static func formation_order(units: Array, center: Vector3, facing: Vector3, attack_move: bool) -> void:
+	var slots := formation_slots(units, center, facing)
+	if slots.is_empty():
+		return
+	var f: Vector3 = resolve_facing(units, center, facing)
+
+	var longest_time: float = 0.0
+	var slowest: float = INF
+	for i in units.size():
+		var flat: Vector3 = slots[i] - units[i].global_position
+		flat.y = 0.0
+		longest_time = maxf(longest_time, flat.length() / units[i].move_speed)
+		slowest = minf(slowest, units[i].move_speed)
+
+	for i in units.size():
+		var flat: Vector3 = slots[i] - units[i].global_position
+		flat.y = 0.0
+		var limit: float = -1.0
+		if attack_move:
+			limit = slowest
+		elif longest_time > 0.01:
+			limit = maxf(flat.length() / longest_time, units[i].move_speed * MIN_FORMATION_SPEED_SHARE)
+		if attack_move:
+			units[i].attack_move_to(slots[i], f, limit)
+		else:
+			units[i].move_to(slots[i], f, limit)

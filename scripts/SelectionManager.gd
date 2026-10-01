@@ -2,7 +2,8 @@ extends Node
 
 # Classic RTS controls:
 #   Left click / drag box ... select your units, or click a building to select it (Shift = add to selection)
-#   Right click ............. ground: move   |   enemy unit: attack it   |   enemy city: attack-move onto it
+#   Right click ............. ground: move in formation   |   enemy unit: attack it   |   enemy city: attack-move onto it
+#   Right click + drag ...... move in formation and face the way you drag (a preview of the slots is shown)
 #   A, then left click ...... attack-move       (right click or Esc cancels)
 #   S ....................... stop
 #   Building hotkeys (I, G, T, ...) only do anything while that specific building is selected.
@@ -17,6 +18,7 @@ const PICK_ANGULAR_RADIUS: float = 0.03    # grows with distance so units stay c
 const CITY_PICK_RADIUS: float = 3.5        # ground distance from a city's centre that counts as clicking it
 const CITY_APPROACH_DISTANCE: float = 4.0  # how far in front of an enemy city attackers gather
 const BUILDING_PICK_RADIUS: float = 3.5    # ground distance from a building's centre that counts as clicking it
+const RIGHT_DRAG_THRESHOLD: float = 12.0   # pixels before a right click becomes a "face this way" drag
 
 var selected: Array = []
 var attack_move_pending: bool = false
@@ -26,6 +28,11 @@ var _dragging: bool = false
 var _drag_start: Vector2 = Vector2.ZERO
 var _drag_current: Vector2 = Vector2.ZERO
 var _overlay: Control = null
+
+var _rdragging: bool = false               # right button held on plain ground (a move order in progress)
+var _rdrag_start_screen: Vector2 = Vector2.ZERO
+var _rdrag_current_screen: Vector2 = Vector2.ZERO
+var _rdrag_start_ground: Vector3 = Vector3.ZERO
 
 func _ready() -> void:
 	add_to_group("selection_managers")
@@ -55,12 +62,17 @@ func _unhandled_input(event: InputEvent) -> void:
 				_on_left_pressed(event.position)
 			else:
 				_on_left_released(event.position)
-		elif event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
-			_on_right_pressed(event.position)
+		elif event.button_index == MOUSE_BUTTON_RIGHT:
+			if event.pressed:
+				_on_right_pressed(event.position)
+			else:
+				_on_right_released(event.position)
 
 	elif event is InputEventMouseMotion:
 		if _dragging:
 			_drag_current = event.position
+		if _rdragging:
+			_rdrag_current_screen = event.position
 
 	elif event is InputEventKey and event.pressed and not event.echo:
 		if selected_building != null and is_instance_valid(selected_building):
@@ -148,24 +160,44 @@ func _on_right_pressed(pos: Vector2) -> void:
 		_order_attack_move(_city_approach_point(city))
 		return
 
-	# 3) plain ground -> move
-	_order_move(ground)
+	# 3) plain ground -> start a move order; it is issued on release so the drag can set the facing
+	_rdragging = true
+	_rdrag_start_screen = pos
+	_rdrag_current_screen = pos
+	_rdrag_start_ground = ground
+
+func _on_right_released(pos: Vector2) -> void:
+	if not _rdragging:
+		return
+	_rdragging = false
+	_rdrag_current_screen = pos
+	_order_move(_rdrag_start_ground, _rdrag_facing())
+
+# The direction the player dragged on the ground, or zero for a plain click (the formation then
+# faces the way it has to travel).
+func _rdrag_facing() -> Vector3:
+	if _rdrag_start_screen.distance_to(_rdrag_current_screen) < RIGHT_DRAG_THRESHOLD:
+		return Vector3.ZERO
+	var ground: Variant = _ground_point(_rdrag_current_screen)
+	if ground == null:
+		return Vector3.ZERO
+	var d: Vector3 = ground - _rdrag_start_ground
+	d.y = 0.0
+	if d.length() < 0.5:
+		return Vector3.ZERO
+	return d.normalized()
 
 # ---------------------------------------------------------------------------
 # Orders
 # ---------------------------------------------------------------------------
 
-func _order_move(point: Vector3) -> void:
+func _order_move(point: Vector3, facing: Vector3 = Vector3.ZERO) -> void:
 	_prune_selection()
-	var destinations := Unit.formation_for(selected, _clamp_to_map(point))
-	for i in selected.size():
-		selected[i].move_to(destinations[i])
+	Unit.formation_order(selected, _clamp_to_map(point), facing, false)
 
 func _order_attack_move(point: Vector3) -> void:
 	_prune_selection()
-	var destinations := Unit.formation_for(selected, _clamp_to_map(point))
-	for i in selected.size():
-		selected[i].attack_move_to(destinations[i])
+	Unit.formation_order(selected, _clamp_to_map(point), Vector3.ZERO, true)
 
 func _order_attack_unit(enemy: Node3D) -> void:
 	_prune_selection()
@@ -298,6 +330,18 @@ func _on_overlay_draw() -> void:
 		var rect := Rect2(_drag_start, Vector2.ZERO).expand(_drag_current)
 		_overlay.draw_rect(rect, Color(0.3, 1.0, 0.4, 0.15), true)
 		_overlay.draw_rect(rect, Color(0.3, 1.0, 0.4, 0.9), false, 2.0)
+
+	# Right-drag preview: the formation slots and the facing arrow
+	if _rdragging:
+		_prune_selection()
+		var facing := _rdrag_facing()
+		var camera := get_viewport().get_camera_3d()
+		if facing != Vector3.ZERO and camera != null and not selected.is_empty():
+			var slots := Unit.formation_slots(selected, _clamp_to_map(_rdrag_start_ground), facing)
+			for slot in slots:
+				if not camera.is_position_behind(slot):
+					_overlay.draw_circle(camera.unproject_position(slot), 4.0, Color(0.3, 1.0, 0.4, 0.9))
+			_overlay.draw_line(_rdrag_start_screen, _rdrag_current_screen, Color(0.3, 1.0, 0.4, 0.9), 2.0)
 
 	var font := ThemeDB.fallback_font
 	_overlay.draw_string(font, Vector2(20.0, 200.0), "Selected: %d" % selected.size(),
