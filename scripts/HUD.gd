@@ -12,6 +12,8 @@ var _selection_manager: Node = null
 var production_label: Label
 var hint_label: Label
 
+const UNIT_KEYS: String = "Right-click  Move (drag to set facing)     A  Attack-move (drag to set facing)     S  Stop / hold ground     V  Supply view"
+
 func _ready() -> void:
 	if player_city:
 		player_city.resources_changed.connect(_on_resources_changed)
@@ -36,7 +38,7 @@ func _process(_delta: float) -> void:
 	if _selection_manager == null:
 		_selection_manager = get_tree().get_first_node_in_group("selection_managers")
 	_refresh_production()
-	hint_label.position = Vector2(20.0, get_viewport().get_visible_rect().size.y - 34.0)
+	hint_label.position = Vector2(20.0, get_viewport().get_visible_rect().size.y - 58.0)
 
 	# The oil field may be created after the HUD is ready, so link to it lazily
 	if _deposit == null:
@@ -70,10 +72,10 @@ func _refresh_production() -> void:
 	var selected: Building = _selection_manager.selected_building if _selection_manager else null
 	if selected == null:
 		production_label.text = "No building selected"
-		hint_label.text = "Click your Barracks or Tank Factory to select it, then use its hotkeys.     A  Attack-move     S  Stop"
+		hint_label.text = "Click your Barracks or Tank Factory to select it, then use its hotkeys.\n" + UNIT_KEYS
 		return
 
-	hint_label.text = _building_hint(selected) + "     A  Attack-move     S  Stop"
+	hint_label.text = _building_hint(selected) + "\n" + UNIT_KEYS
 	if selected.is_recruiting:
 		production_label.text = "%s: building %s (%ds)" % [selected.building_name, selected.recruit_name, ceili(selected.recruit_timer)]
 	else:

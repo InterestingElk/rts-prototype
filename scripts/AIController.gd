@@ -18,6 +18,20 @@ extends Node
 #     arrive in formation. Units sent to the oil field hold ground there once it is captured.
 #   - A group that finds itself outgunned (below RETREAT_RATIO of the enemy power near it)
 #     falls back to its city, regroups, and rejoins the pool for the next wave.
+#
+# AI level 5: supply awareness.
+#   - A group that is CUT OFF (enemy-held ground between it and its city, while it is within supply
+#     reach) breaks out: it fights its way back to the city, then rejoins the pool.
+#   - A badly hurt group that is out of supply and not in a fight goes home to heal.
+#   - Units only go out on a wave once they are healthy again (READY_HEALTH), so a wave that just
+#     retreated heals up at home first; wounded units are the first to be left as the home guard.
+#
+# AI level 4: defence.
+#   - A small HOME_GUARD always stays behind when a wave leaves.
+#   - Enemies spotted near the AI city are a home threat: new waves stop launching, units at
+#     home move out to meet it, and if home power (counted extra, as defenders fight tougher
+#     near their own city) is below the threat, field groups are recalled -- nearest first,
+#     only as many as needed. Recalled groups rejoin the pool once the threat is gone.
 
 @export var ai_city: Node3D          # the City this controls
 @export var ai_barracks: Building    # where infantry / AT infantry are recruited from
@@ -52,6 +66,23 @@ const ENGAGE_RADIUS: float = 22.0        # how close known enemies must be to co
 const RALLY_DISTANCE: float = 8.0        # retreat point: this far in front of the AI city, toward the player
 const RETREAT_TIMEOUT: float = 25.0      # seconds before a retreating group counts as home regardless
 
+# --- Defence ---
+const HOME_GUARD: int = 2                # units kept at home whenever a wave launches
+const DEFENCE_RADIUS: float = 30.0       # spotted enemies this close to the AI city are a home threat
+const HOME_RADIUS: float = 25.0          # AI units this close to its city count as home defenders
+const DEFENCE_BONUS: float = 1.3         # defenders near their own city fight this much tougher
+const DEFENCE_MARGIN: float = 1.2        # wants home power at least this x the threat
+const DEFENCE_STAND_DISTANCE: float = 5.0 # defenders meet the threat this far out from the city
+const DEFENCE_ORDER_INTERVAL: float = 3.0 # how often units at home are re-pointed at the threat
+const DEFENCE_TIMEOUT: float = 40.0      # seconds before a recalled group counts as home regardless
+
+# --- Supply awareness ---
+const CUT_OFF_SHARE: float = 0.5         # share of a group that must be cut off before it breaks out
+const BREAKOUT_TIMEOUT: float = 40.0
+const HEAL_RETREAT_HEALTH: float = 0.45  # a group this hurt (on average)...
+const HEAL_RETREAT_UNSUPPLIED: float = 0.5 # ...with this share out of supply, and no fight, goes home
+const READY_HEALTH: float = 0.7          # units wait at home until this healthy before joining a wave
+
 var wave_threshold: int = 5
 var wave_units: Array[Node3D] = []   # recruited units waiting for the next wave
 
@@ -66,8 +97,14 @@ var known_infantry: int = 0          # plain infantry (everything that is not a 
 
 var _tank_factory: Building = null
 var _deposit: OilDeposit = null
+var _supply: SupplyMap = null
 var _last_plan: String = ""
 var _massing_reported: bool = false
+
+var home_threat: float = 0.0             # power of spotted enemies near the AI city (0 = none)
+var _threat_pos: Vector3 = Vector3.ZERO  # where they were last seen (average)
+var _defence_active: bool = false
+var _last_defence_order: float = -100.0
 var _active: bool = true   # set false to halt recruiting/attacking (used by tests; not exposed in play)
 
 func _ready() -> void:
@@ -79,6 +116,7 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_tank_factory = _find_tank_factory()
 	_deposit = get_tree().get_first_node_in_group("oil_deposits") as OilDeposit
+	_supply = get_tree().get_first_node_in_group("supply_maps") as SupplyMap
 
 	ai_barracks.unit_recruited.connect(_on_unit_recruited)
 	if _tank_factory != null:
@@ -107,6 +145,7 @@ func _scan_loop() -> void:
 		await get_tree().create_timer(SCAN_INTERVAL).timeout
 		if _active:
 			_scan()
+			_update_defence()
 			_update_groups()
 
 func _scan() -> void:
@@ -264,8 +303,7 @@ func _unit_power(u: Node3D) -> float:
 
 # Our own units are worth less the more damaged they are
 func _own_power(u: Node3D) -> float:
-	var max_health: float = Tank.TANK_HEALTH if u is Tank else 100.0
-	return _unit_power(u) * clampf(u.get_effective_health() / max_health, 0.0, 1.0)
+	return _unit_power(u) * u.get_health_fraction()
 
 func _group_power(units: Array) -> float:
 	var total: float = 0.0
@@ -295,10 +333,26 @@ func _centroid(units: Array) -> Vector3:
 # ---------------------------------------------------------------------------
 
 func _try_launch() -> void:
-	if wave_units.size() < wave_threshold:
+	if home_threat > 0.0:
+		return # the city is under threat: nobody leaves
+	if wave_units.size() < wave_threshold + HOME_GUARD:
 		return
-	var group: Array = _alive(wave_units)
-	wave_units.assign(group)
+	var pool: Array = _alive(wave_units)
+	wave_units.assign(pool)
+	if pool.size() < wave_threshold + HOME_GUARD:
+		return
+
+	# The most hurt (then the weakest) units stay home as a guard; the healthy rest form the wave.
+	# Wounded units keep healing at home until they are ready.
+	var by_need: Array = pool.duplicate()
+	by_need.sort_custom(func(a, b):
+		var ha: float = a.get_health_fraction()
+		var hb: float = b.get_health_fraction()
+		if not is_equal_approx(ha, hb):
+			return ha < hb
+		return _unit_power(a) < _unit_power(b))
+	var guard: Array = by_need.slice(0, HOME_GUARD)
+	var group: Array = pool.filter(func(u): return not guard.has(u) and u.get_health_fraction() >= READY_HEALTH)
 	if group.size() < wave_threshold:
 		return
 
@@ -321,8 +375,8 @@ func _try_launch() -> void:
 		return
 
 	_massing_reported = false
-	print("AI launching wave of %d (power %.1f) at the %s (known enemy power there %.1f)" % [group.size(), power, goal, threat])
-	wave_units.clear()
+	print("AI launching wave of %d (power %.1f) at the %s (known enemy power there %.1f), %d stay as home guard" % [group.size(), power, goal, threat, guard.size()])
+	wave_units.assign(guard)
 	_pick_new_threshold()
 	groups.append({"units": group, "goal": goal, "state": "advancing", "since": _now()})
 	Unit.formation_order(group, point, Vector3.ZERO, true)
@@ -334,7 +388,7 @@ func _wants_oil() -> bool:
 	if _deposit.controller == OilDeposit.Controller.AI:
 		return false
 	for g in groups:
-		if g["goal"] == "oil" and g["state"] != "retreating":
+		if g["goal"] == "oil" and (g["state"] == "advancing" or g["state"] == "garrison"):
 			return false
 	return true
 
@@ -355,16 +409,134 @@ func _update_groups() -> void:
 				_rejoin(g)
 			continue
 
+		if g["state"] == "breakout":
+			# Fighting its way back to the city: done when reconnected or home
+			if _cut_share(units) < 0.2 or _all_idle(units) or _now() - g["since"] > BREAKOUT_TIMEOUT:
+				_rejoin(g)
+			continue
+
+		if g["state"] == "defending":
+			# Recalled to the city: fights to the end there (no retreat), goes back to the pool when it is quiet
+			if home_threat <= 0.0 and (_now() - g["since"] > DEFENCE_TIMEOUT or _all_idle(units)):
+				_rejoin(g)
+			continue
+
 		var centroid: Vector3 = _centroid(units)
 		var threat: float = _known_power_near(centroid, ENGAGE_RADIUS)
 		if threat > 0.0 and _group_power(units) < threat * RETREAT_RATIO:
 			_begin_retreat(g, centroid, threat)
+		elif _supply != null and _cut_share(units) >= CUT_OFF_SHARE:
+			_begin_breakout(g, centroid)
+		elif threat <= 0.0 and _needs_healing(units):
+			print("AI group of %d is hurt and out of supply, going home to heal" % units.size())
+			_begin_retreat(g, centroid, 0.0)
 		elif g["goal"] == "oil" and g["state"] == "advancing" and _holding_oil(units):
 			# Captured: stay and guard it (hold ground) instead of wandering off after enemies
 			g["state"] = "garrison"
 			print("AI group of %d garrisoning the oil field" % units.size())
 			for u in units:
 				u.stop()
+
+# Looks for spotted enemies near the AI city, points the units at home at them, and recalls field
+# groups if home power is not enough.
+func _update_defence() -> void:
+	var home: Vector3 = ai_city.global_position
+	var power: float = 0.0
+	var sum := Vector3.ZERO
+	var count: int = 0
+	for enemy in known_enemies.keys():
+		if not is_instance_valid(enemy):
+			continue
+		var pos: Vector3 = known_enemies[enemy]["pos"]
+		if Vector2(pos.x - home.x, pos.z - home.z).length() <= DEFENCE_RADIUS:
+			power += _unit_power(enemy)
+			sum += pos
+			count += 1
+
+	home_threat = power
+	if count == 0:
+		if _defence_active:
+			_defence_active = false
+			print("AI home threat cleared")
+			_try_launch()
+		return
+	_threat_pos = sum / float(count)
+	if not _defence_active:
+		_defence_active = true
+		print("AI home threat: %d enemies near the city (power %.1f)" % [count, power])
+
+	var to_threat: Vector3 = _threat_pos - home
+	to_threat.y = 0.0
+	var dir: Vector3 = to_threat.normalized() if to_threat.length() > 0.01 else Vector3(-1.0, 0.0, 0.0)
+	var point: Vector3 = home + dir * minf(DEFENCE_STAND_DISTANCE, to_threat.length())
+
+	# Defenders already home (or recalled and on their way)
+	var coming: Dictionary = {}
+	for g in groups:
+		if g["state"] == "retreating" or g["state"] == "defending":
+			for u in g["units"]:
+				coming[u] = true
+	var home_power: float = 0.0
+	for u in get_tree().get_nodes_in_group("ai_units"):
+		if not is_instance_valid(u):
+			continue
+		var flat := Vector2(u.global_position.x - home.x, u.global_position.z - home.z)
+		if flat.length() <= HOME_RADIUS or coming.has(u):
+			home_power += _own_power(u)
+	home_power *= DEFENCE_BONUS
+
+	# Point the units sitting at home at the threat (re-issued now and then as it moves)
+	if _now() - _last_defence_order >= DEFENCE_ORDER_INTERVAL:
+		_last_defence_order = _now()
+		var defenders: Array = _alive(wave_units)
+		if not defenders.is_empty():
+			Unit.formation_order(defenders, point, dir, true)
+
+	# Not enough at home: recall field groups, nearest first, only as many as needed
+	var shortfall: float = power * DEFENCE_MARGIN - home_power
+	if shortfall <= 0.0:
+		return
+	var candidates: Array = groups.filter(func(g): return g["state"] == "advancing" or g["state"] == "garrison")
+	candidates.sort_custom(func(a, b):
+		return _centroid(a["units"]).distance_to(home) < _centroid(b["units"]).distance_to(home))
+	for g in candidates:
+		if shortfall <= 0.0:
+			break
+		print("AI recalling a group of %d to defend the city (threat %.1f vs home %.1f)" % [g["units"].size(), power, home_power])
+		g["state"] = "defending"
+		g["since"] = _now()
+		Unit.formation_order(g["units"], point, dir, true)
+		shortfall -= _group_power(g["units"]) * DEFENCE_BONUS
+
+# Share of a group that is cut off from its city by enemy-held ground
+func _cut_share(units: Array) -> float:
+	if _supply == null or units.is_empty():
+		return 0.0
+	var n: int = 0
+	for u in units:
+		if _supply.is_cut_off(u.global_position, false):
+			n += 1
+	return float(n) / float(units.size())
+
+# Hurt on average, and mostly out of supply (so it cannot recover where it is)
+func _needs_healing(units: Array) -> bool:
+	var health: float = 0.0
+	var unsupplied: int = 0
+	for u in units:
+		health += u.get_health_fraction()
+		if not u.in_supply:
+			unsupplied += 1
+	health /= float(units.size())
+	return health < HEAL_RETREAT_HEALTH and float(unsupplied) / float(units.size()) >= HEAL_RETREAT_UNSUPPLIED
+
+func _begin_breakout(g: Dictionary, centroid: Vector3) -> void:
+	print("AI group of %d is cut off from supply, breaking out" % g["units"].size())
+	g["state"] = "breakout"
+	g["since"] = _now()
+	var toward_player := (player_city.global_position - ai_city.global_position).normalized()
+	var rally: Vector3 = ai_city.global_position + toward_player * RALLY_DISTANCE
+	# Attack-move, so it fights through whatever is blocking the way
+	Unit.formation_order(g["units"], rally, centroid - rally, true)
 
 func _holding_oil(units: Array) -> bool:
 	if _deposit == null or _deposit.controller != OilDeposit.Controller.AI:
@@ -382,7 +554,8 @@ func _all_idle(units: Array) -> bool:
 	return true
 
 func _begin_retreat(g: Dictionary, centroid: Vector3, threat: float) -> void:
-	print("AI group of %d retreating (power %.1f vs %.1f nearby)" % [g["units"].size(), _group_power(g["units"]), threat])
+	if threat > 0.0:
+		print("AI group of %d retreating (power %.1f vs %.1f nearby)" % [g["units"].size(), _group_power(g["units"]), threat])
 	g["state"] = "retreating"
 	g["since"] = _now()
 	var toward_player := (player_city.global_position - ai_city.global_position).normalized()

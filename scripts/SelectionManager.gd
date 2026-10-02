@@ -33,6 +33,7 @@ var _rdragging: bool = false               # right button held on plain ground (
 var _rdrag_start_screen: Vector2 = Vector2.ZERO
 var _rdrag_current_screen: Vector2 = Vector2.ZERO
 var _rdrag_start_ground: Vector3 = Vector3.ZERO
+var _rdrag_attack: bool = false            # true when the drag is an attack-move (A + left button)
 
 func _ready() -> void:
 	add_to_group("selection_managers")
@@ -86,13 +87,14 @@ func _unhandled_input(event: InputEvent) -> void:
 				_order_stop()
 			KEY_ESCAPE:
 				attack_move_pending = false
+				_rdragging = false
 
 func _on_left_pressed(pos: Vector2) -> void:
 	if attack_move_pending:
 		attack_move_pending = false
 		var ground: Variant = _ground_point(pos)
 		if ground != null:
-			_order_attack_move(ground)
+			_begin_formation_drag(pos, ground, true) # issued on release so the drag can set the facing
 		return
 
 	_dragging = true
@@ -100,6 +102,9 @@ func _on_left_pressed(pos: Vector2) -> void:
 	_drag_current = pos
 
 func _on_left_released(pos: Vector2) -> void:
+	if _rdragging and _rdrag_attack:
+		_finish_formation_drag(pos)
+		return
 	if not _dragging:
 		return
 	_dragging = false
@@ -138,6 +143,9 @@ func _on_left_released(pos: Vector2) -> void:
 	_set_selection(picked)
 
 func _on_right_pressed(pos: Vector2) -> void:
+	if _rdragging and _rdrag_attack:
+		_rdragging = false # right click cancels an attack-move drag in progress
+		return
 	if attack_move_pending:
 		attack_move_pending = false # right click cancels targeting mode
 		return
@@ -161,17 +169,28 @@ func _on_right_pressed(pos: Vector2) -> void:
 		return
 
 	# 3) plain ground -> start a move order; it is issued on release so the drag can set the facing
-	_rdragging = true
-	_rdrag_start_screen = pos
-	_rdrag_current_screen = pos
-	_rdrag_start_ground = ground
+	_begin_formation_drag(pos, ground, false)
 
 func _on_right_released(pos: Vector2) -> void:
-	if not _rdragging:
+	if not _rdragging or _rdrag_attack:
 		return
+	_finish_formation_drag(pos)
+
+func _begin_formation_drag(screen_pos: Vector2, ground: Vector3, attack: bool) -> void:
+	_rdragging = true
+	_rdrag_attack = attack
+	_rdrag_start_screen = screen_pos
+	_rdrag_current_screen = screen_pos
+	_rdrag_start_ground = ground
+
+func _finish_formation_drag(pos: Vector2) -> void:
 	_rdragging = false
 	_rdrag_current_screen = pos
-	_order_move(_rdrag_start_ground, _rdrag_facing())
+	var facing := _rdrag_facing()
+	if _rdrag_attack:
+		_order_attack_move(_rdrag_start_ground, facing)
+	else:
+		_order_move(_rdrag_start_ground, facing)
 
 # The direction the player dragged on the ground, or zero for a plain click (the formation then
 # faces the way it has to travel).
@@ -193,11 +212,14 @@ func _rdrag_facing() -> Vector3:
 
 func _order_move(point: Vector3, facing: Vector3 = Vector3.ZERO) -> void:
 	_prune_selection()
-	Unit.formation_order(selected, _clamp_to_map(point), facing, false)
+	Unit.formation_order(selected, _clamp_to_map(point), facing, false, _bounds())
 
-func _order_attack_move(point: Vector3) -> void:
+func _order_attack_move(point: Vector3, facing: Vector3 = Vector3.ZERO) -> void:
 	_prune_selection()
-	Unit.formation_order(selected, _clamp_to_map(point), Vector3.ZERO, true)
+	Unit.formation_order(selected, _clamp_to_map(point), facing, true, _bounds())
+
+func _bounds() -> Vector2:
+	return Vector2(map_half_width, map_half_depth)
 
 func _order_attack_unit(enemy: Node3D) -> void:
 	_prune_selection()
@@ -331,22 +353,55 @@ func _on_overlay_draw() -> void:
 		_overlay.draw_rect(rect, Color(0.3, 1.0, 0.4, 0.15), true)
 		_overlay.draw_rect(rect, Color(0.3, 1.0, 0.4, 0.9), false, 2.0)
 
-	# Right-drag preview: the formation slots and the facing arrow
-	if _rdragging:
-		_prune_selection()
-		var facing := _rdrag_facing()
-		var camera := get_viewport().get_camera_3d()
-		if facing != Vector3.ZERO and camera != null and not selected.is_empty():
-			var slots := Unit.formation_slots(selected, _clamp_to_map(_rdrag_start_ground), facing)
-			for slot in slots:
-				if not camera.is_position_behind(slot):
-					_overlay.draw_circle(camera.unproject_position(slot), 4.0, Color(0.3, 1.0, 0.4, 0.9))
-			_overlay.draw_line(_rdrag_start_screen, _rdrag_current_screen, Color(0.3, 1.0, 0.4, 0.9), 2.0)
+	var camera := get_viewport().get_camera_3d()
+	if camera != null:
+		_draw_order_markers(camera)
 
 	var font := ThemeDB.fallback_font
-	_overlay.draw_string(font, Vector2(20.0, 200.0), "Selected: %d" % selected.size(),
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0.8, 1.0, 0.8))
+	var unsupplied: int = 0
+	for u: Unit in selected:
+		if not u.in_supply:
+			unsupplied += 1
+	var selected_text: String = "Selected: %d" % selected.size()
+	if unsupplied > 0:
+		selected_text += "   (%d OUT OF SUPPLY - not recovering)" % unsupplied
+	_overlay.draw_string(font, Vector2(20.0, 200.0), selected_text,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1.0, 0.7, 0.3) if unsupplied > 0 else Color(0.8, 1.0, 0.8))
 	if attack_move_pending:
 		_overlay.draw_string(font, Vector2(20.0, 224.0),
 			"ATTACK-MOVE: left-click a location (right-click or Esc to cancel)",
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1.0, 0.8, 0.3))
+
+# Markers for where units are going, drawn even when you are not dragging:
+#   - while a move / attack-move is being placed (button held): the formation slots plus a facing tick
+#   - always, for selected units that have a move or attack-move order: a line and a dot at the destination
+func _draw_order_markers(camera: Camera3D) -> void:
+	_prune_selection()
+	var move_color := Color(0.3, 1.0, 0.4, 0.9)
+	var attack_color := Color(1.0, 0.65, 0.2, 0.9)
+
+	for u: Unit in selected:
+		if u.order != Unit.Order.MOVE and u.order != Unit.Order.ATTACK_MOVE:
+			continue
+		var c: Color = move_color if u.order == Unit.Order.MOVE else attack_color
+		if camera.is_position_behind(u.global_position) or camera.is_position_behind(u.order_position):
+			continue
+		var from := camera.unproject_position(u.global_position)
+		var to := camera.unproject_position(u.order_position)
+		_overlay.draw_line(from, to, Color(c.r, c.g, c.b, 0.35), 1.0)
+		_overlay.draw_circle(to, 3.0, c)
+
+	if _rdragging and not selected.is_empty():
+		var c: Color = attack_color if _rdrag_attack else move_color
+		var facing := _rdrag_facing()
+		var center := _clamp_to_map(_rdrag_start_ground)
+		var f := Unit.resolve_facing(selected, center, facing)
+		var slots := Unit.formation_slots(selected, center, facing, _bounds())
+		for slot in slots:
+			if camera.is_position_behind(slot):
+				continue
+			var p := camera.unproject_position(slot)
+			_overlay.draw_circle(p, 4.0, c)
+			_overlay.draw_line(p, camera.unproject_position(slot + f * 1.4), c, 2.0)
+		if facing != Vector3.ZERO:
+			_overlay.draw_line(_rdrag_start_screen, _rdrag_current_screen, c, 2.0)

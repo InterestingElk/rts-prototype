@@ -30,9 +30,29 @@ var pick_radius: float = 0.7            # how close to its centre a click must l
 # --- Health pools ---
 var manpower_health: float = 100.0
 var equipment_health: float = 100.0
+var max_health: float = 100.0          # what a full-health bar means (Tank raises this)
+
+# --- Supply (set every half second by SupplyMap) ---
+# In supply = connected to a city of our side through ground the enemy does not control, and not
+# too far away. Only supplied units that are out of combat recover health.
+var in_supply: bool = true
+const REGEN_PERCENT_PER_SEC: float = 0.005   # of max health per second (200 s from empty to full)
+const COMBAT_COOLDOWN: float = 5.0           # seconds after fighting before regeneration starts
+var _combat_cooldown: float = 0.0
+
+# Healing manpower is paid from the city's manpower pool: a full-health unit represents
+# `manpower_cost` manpower, so each health point healed costs manpower_cost / max_health.
+# (Equipment recovers for free for now.) With an empty pool, manpower stops recovering.
+var manpower_cost: float = 15.0
+var _supply_city: Node3D = null
+var bar_height: float = 1.2            # how far above the unit its health bar floats
+var is_selected: bool = false
 
 func get_effective_health() -> float:
 	return min(manpower_health, equipment_health)
+
+func get_health_fraction() -> float:
+	return clampf(get_effective_health() / max_health, 0.0, 1.0)
 
 # --- Combat ---
 const MANPOWER_DAMAGE_SHARE: float = 0.6
@@ -92,6 +112,7 @@ func _on_moved(_delta: float) -> void:
 	pass
 
 func _physics_process(delta: float) -> void:
+	_regenerate(delta)
 	match order:
 		Order.MOVE:
 			_process_move(delta)
@@ -101,6 +122,26 @@ func _physics_process(delta: float) -> void:
 			_process_attack_target(delta)
 		Order.NONE:
 			_process_idle(delta)
+
+func _regenerate(delta: float) -> void:
+	if _combat_cooldown > 0.0:
+		_combat_cooldown -= delta
+		return
+	if not in_supply:
+		return
+	var amount: float = max_health * REGEN_PERCENT_PER_SEC * delta
+	equipment_health = minf(max_health, equipment_health + amount)
+
+	var wanted: float = minf(amount, max_health - manpower_health)
+	if wanted <= 0.0:
+		return
+	if _supply_city == null or not is_instance_valid(_supply_city):
+		_supply_city = _find_nearest_city()
+	if _supply_city == null:
+		return
+	var per_point: float = manpower_cost / max_health
+	var taken: float = _supply_city.take_manpower(wanted * per_point)
+	manpower_health += taken / per_point
 
 # ---------------------------------------------------------------------------
 # Public order API (used by SelectionManager and AIController)
@@ -140,6 +181,7 @@ func stop() -> void:
 	hold_position = true
 
 func set_selected(value: bool) -> void:
+	is_selected = value
 	if value and _selection_ring == null:
 		_selection_ring = _make_selection_ring()
 		add_child(_selection_ring)
@@ -265,6 +307,7 @@ func _face_direction(direction: Vector3, delta: float) -> void:
 	rotation.y = lerp_angle(rotation.y, target_angle, clampf(turn_speed * delta, 0.0, 1.0))
 
 func _try_attack(enemy: Node3D, delta: float) -> void:
+	_combat_cooldown = COMBAT_COOLDOWN
 	velocity = Vector3.ZERO
 	_face_direction(enemy.global_position - global_position, delta)
 	attack_timer -= delta
@@ -274,6 +317,7 @@ func _try_attack(enemy: Node3D, delta: float) -> void:
 			enemy.take_damage(soft_attack, hard_attack, hard_type)
 
 func take_damage(atk_soft: float, atk_hard: float, atk_hard_type: HardType) -> void:
+	_combat_cooldown = COMBAT_COOLDOWN
 	var hard_resist: float = hard_infantry_resist if atk_hard_type == HardType.HARD_INFANTRY else hard_vehicle_resist
 	var actual_amount: float = atk_soft * (1.0 - soft_resist) + atk_hard * (1.0 - hard_resist)
 	if _is_near_own_city():
@@ -363,7 +407,9 @@ static func resolve_facing(units: Array, center: Vector3, facing: Vector3) -> Ve
 	return f.normalized()
 
 # One destination per unit (same order as `units`)
-static func formation_slots(units: Array, center: Vector3, facing: Vector3) -> Array[Vector3]:
+# bounds: half-width / half-depth of the map; when given, the whole block is nudged back inside it
+# (rather than squashing slots onto the edge).
+static func formation_slots(units: Array, center: Vector3, facing: Vector3, bounds: Vector2 = Vector2.ZERO) -> Array[Vector3]:
 	var count: int = units.size()
 	var slots: Array[Vector3] = []
 	if count == 0:
@@ -394,12 +440,30 @@ static func formation_slots(units: Array, center: Vector3, facing: Vector3) -> A
 		for j in in_rank:
 			var lateral: float = (float(j) - float(in_rank - 1) * 0.5) * spacing
 			slots[rank[j]] = center + r * lateral + f * depth
+
+	if bounds != Vector2.ZERO:
+		var lo := Vector2(INF, INF)
+		var hi := Vector2(-INF, -INF)
+		for s in slots:
+			lo = Vector2(minf(lo.x, s.x), minf(lo.y, s.z))
+			hi = Vector2(maxf(hi.x, s.x), maxf(hi.y, s.z))
+		var shift := Vector3.ZERO
+		if hi.x > bounds.x:
+			shift.x = bounds.x - hi.x
+		elif lo.x < -bounds.x:
+			shift.x = -bounds.x - lo.x
+		if hi.y > bounds.y:
+			shift.z = bounds.y - hi.y
+		elif lo.y < -bounds.y:
+			shift.z = -bounds.y - lo.y
+		for i in slots.size():
+			slots[i] += shift
 	return slots
 
 # Order a whole group to a point in formation. Everyone is throttled so the group arrives
 # together (a move) or keeps pace with its slowest member (an attack-move).
-static func formation_order(units: Array, center: Vector3, facing: Vector3, attack_move: bool) -> void:
-	var slots := formation_slots(units, center, facing)
+static func formation_order(units: Array, center: Vector3, facing: Vector3, attack_move: bool, bounds: Vector2 = Vector2.ZERO) -> void:
+	var slots := formation_slots(units, center, facing, bounds)
 	if slots.is_empty():
 		return
 	var f: Vector3 = resolve_facing(units, center, facing)

@@ -23,6 +23,8 @@ func _init() -> void:
 	formation_spacing = 3.2
 	selection_radius = 1.7  # the ring must be wider than the 1.4 x 2.4 hull or it hides inside it
 	pick_radius = 1.4       # the hull is long, so clicks on the front or rear should still hit
+	bar_height = 1.7        # health bar sits above the turret
+	manpower_cost = 20.0    # what a tank costs to recruit; healing it is priced from this
 
 	# Soft/hard attack profile (medium tank tier, locked in the design doc).
 	# Light/heavy tank tiers are future work and would subclass Tank the same way this subclasses Unit.
@@ -37,6 +39,7 @@ func _ready() -> void:
 	super._ready()
 	manpower_health = TANK_HEALTH
 	equipment_health = TANK_HEALTH
+	max_health = TANK_HEALTH
 
 func _get_own_city() -> Node3D:
 	if _own_city == null or not is_instance_valid(_own_city):

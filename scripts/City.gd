@@ -1,7 +1,7 @@
 extends Node3D
 
 # --- Resource stockpiles ---
-var manpower: float = 150.0
+var manpower: float = 500.0
 var steel: float = 200.0
 var oil: float = 20.0   # small starting stock; the oil field in the middle of the map pays more
 
@@ -21,6 +21,7 @@ const TRICKLE_BACK_DURATION: float = 60.0
 var trickle_back_batches: Array = [] # each entry: {amount: float}
 
 signal resources_changed(manpower: float, steel: float)
+@warning_ignore("unused_signal")
 signal infantry_recruited(unit: Node3D)   # emitted by Barracks on this city's behalf; AI wave logic listens for it
 signal oil_changed(oil: float)
 
@@ -41,6 +42,12 @@ func _process(delta: float) -> void:
 	trickle_back_batches = trickle_back_batches.filter(func(b): return b["amount"] > 0.0)
 
 	resources_changed.emit(manpower, steel)
+
+# Takes up to `amount` manpower out of the pool (used for healing units); returns what was actually taken.
+func take_manpower(amount: float) -> float:
+	var taken: float = minf(amount, manpower)
+	manpower -= taken
+	return taken
 
 func add_oil(amount: float) -> void:
 	oil += amount
