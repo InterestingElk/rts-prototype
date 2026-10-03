@@ -64,6 +64,12 @@ func start_trickle_back(amount: float) -> void:
 func _check_overrun() -> void:
 	var enemy_group := "ai_units" if is_player_city else "player_units"
 	var own_group := "player_units" if is_player_city else "ai_units"
+	var grid := SpatialGrid.instance
+	if grid != null:
+		var enemies: int = grid.count_within(global_position, not is_player_city, OVERRUN_CHECK_RADIUS)
+		if enemies >= OVERRUN_UNIT_COUNT and grid.count_within(global_position, is_player_city, OVERRUN_CHECK_RADIUS) == 0:
+			overrun.emit()
+		return
 
 	var nearby_enemies := 0
 	for unit in get_tree().get_nodes_in_group(enemy_group):

@@ -112,6 +112,9 @@ func capture_fraction() -> float:
 	return clampf(capture_progress / capture_time, 0.0, 1.0)
 
 func _count_units_in_zone(group: String) -> int:
+	var grid := SpatialGrid.instance
+	if grid != null:
+		return grid.count_within(global_position, group == "player_units", control_radius)
 	var count := 0
 	for unit: Node3D in get_tree().get_nodes_in_group(group):
 		if not is_instance_valid(unit):

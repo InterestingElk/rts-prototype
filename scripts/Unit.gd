@@ -25,6 +25,7 @@ var hard_infantry_resist: float = 0.65
 var hard_vehicle_resist: float = 0.5
 var formation_spacing: float = 1.6      # room this unit needs when a group is spread out
 var selection_radius: float = 0.7       # outer radius of the green selection ring
+var separation_radius: float = 1.0      # units closer than this (on average) push each other apart
 var pick_radius: float = 0.7            # how close to its centre a click must land to select/target it
 
 # --- Health pools ---
@@ -62,6 +63,8 @@ const DEFENSE_DAMAGE_REDUCTION: float = 0.3 # 30% less damage taken near own cit
 
 # --- Movement ---
 const ARRIVE_DISTANCE: float = 0.4    # close enough to a move destination
+const SEPARATION_EVERY_N_FRAMES: int = 3   # each unit recomputes its push this often and reuses it in between
+const SEPARATION_STRENGTH: float = 1.5   # how hard overlapping friends shove each other (x move speed)
 const STUCK_TIMEOUT: float = 0.6      # give up on a destination if blocked this long
 
 # --- Orders ---
@@ -83,6 +86,7 @@ var order: Order = Order.NONE
 var order_position: Vector3 = Vector3.ZERO
 var order_target: Node3D = null
 
+var _push: Vector3 = Vector3.ZERO
 var attack_timer: float = 0.0
 var _stuck_time: float = 0.0
 var _selection_ring: MeshInstance3D = null
@@ -94,12 +98,24 @@ signal died(unit: Node3D)
 
 func _ready() -> void:
 	add_to_group("player_units" if is_player_unit else "ai_units")
+	# Units no longer collide with each other (see _move_toward): they are moved directly and
+	# spread out by separation steering, which is far cheaper than physics for big armies.
+	collision_layer = 0
+	collision_mask = 0
 	_apply_team_color()
+
+# Two materials shared by every unit (instead of one new material per unit)
+static var _player_material: StandardMaterial3D = null
+static var _enemy_material: StandardMaterial3D = null
 
 # Placeholder look: tint every mesh on the unit blue (yours) or red (enemy)
 func _apply_team_color() -> void:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = PLAYER_COLOR if is_player_unit else ENEMY_COLOR
+	if _player_material == null:
+		_player_material = StandardMaterial3D.new()
+		_player_material.albedo_color = PLAYER_COLOR
+		_enemy_material = StandardMaterial3D.new()
+		_enemy_material.albedo_color = ENEMY_COLOR
+	var mat: StandardMaterial3D = _player_material if is_player_unit else _enemy_material
 	for child in get_children():
 		if child is MeshInstance3D:
 			child.material_override = mat
@@ -252,11 +268,40 @@ func _engage(enemy: Node3D, delta: float) -> void:
 		_try_attack(enemy, delta)
 
 # Nearest enemy within max_range (defaults to notice_range when max_range is left negative)
+# Enemy search is throttled: a unit rescans a few times a second and remembers the result in between.
+# (Looking every physics frame costs ~15x more and nobody can tell the difference.)
+const ENEMY_SCAN_INTERVAL_MSEC: int = 250
+var _next_scan_msec: int = 0
+var _scan_enemy: Node3D = null
+var _scan_range: float = -1.0
+
 func _find_nearest_enemy(max_range: float = -1.0) -> Node3D:
+	var radius: float = notice_range if max_range < 0.0 else max_range
+	var now: int = Time.get_ticks_msec()
+
+	# Recent result for the same range: reuse it while it is still valid
+	if now < _next_scan_msec and radius == _scan_range:
+		if _scan_enemy == null:
+			return null
+		if is_instance_valid(_scan_enemy) and global_position.distance_squared_to(_scan_enemy.global_position) < radius * radius:
+			return _scan_enemy
+
+	# Otherwise look again (jittered so units don't all rescan on the same frame)
+	_next_scan_msec = now + ENEMY_SCAN_INTERVAL_MSEC + randi() % 100
+	_scan_range = radius
+	_scan_enemy = _scan_for_enemy(radius)
+	return _scan_enemy
+
+func _scan_for_enemy(radius: float) -> Node3D:
+	# Fast path: ask the spatial grid (only looks at nearby buckets)
+	var grid := SpatialGrid.instance
+	if grid != null:
+		return grid.nearest_unit(global_position, not is_player_unit, radius)
+
+	# Fallback: scan every enemy
 	var enemy_group := "ai_units" if is_player_unit else "player_units"
 	var nearest: Node3D = null
-	var nearest_dist: float = notice_range if max_range < 0.0 else max_range
-
+	var nearest_dist: float = radius
 	for enemy in get_tree().get_nodes_in_group(enemy_group):
 		if not is_instance_valid(enemy):
 			continue
@@ -264,7 +309,6 @@ func _find_nearest_enemy(max_range: float = -1.0) -> Node3D:
 		if d < nearest_dist:
 			nearest_dist = d
 			nearest = enemy
-
 	return nearest
 
 # use_limit: marching to an order destination, so the formation's speed cap applies
@@ -289,8 +333,19 @@ func _move_toward(pos: Vector3, delta: float, use_limit: bool = false) -> void:
 	if use_limit and speed_limit > 0.0:
 		speed = minf(move_speed, speed_limit)
 	velocity = flat.normalized() * speed
+
+	# Spread out from friendly units standing too close (replaces physics collisions)
+	var grid := SpatialGrid.instance
+	if grid != null:
+		if (Engine.get_physics_frames() + get_instance_id()) % SEPARATION_EVERY_N_FRAMES == 0:
+			_push = grid.separation_push(self, is_player_unit, separation_radius)
+		velocity += _push * speed * SEPARATION_STRENGTH
+		velocity.y = 0.0
+		if velocity.length() > speed:
+			velocity = velocity.normalized() * speed
+
 	var before := global_position
-	move_and_slide()
+	global_position += velocity * delta
 
 	# Track being blocked (e.g. by friendly units) so move orders can give up gracefully
 	var moved := before.distance_to(global_position)

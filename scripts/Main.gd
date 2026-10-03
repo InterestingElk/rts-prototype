@@ -5,10 +5,17 @@ extends Node3D
 
 var game_over: bool = false
 var _elapsed: float = 0.0
+var _debug_label: Label = null
 
 func _ready() -> void:
 	player_city.overrun.connect(_on_player_defeated)
 	ai_city.overrun.connect(_on_ai_defeated)
+
+	# Spatial grid: fast "who is near here?" lookups. Added first so it is ready before any unit exists.
+	var grid := Node.new()
+	grid.name = "SpatialGrid"
+	grid.set_script(load("res://scripts/SpatialGrid.gd"))
+	add_child(grid)
 
 	# Supply: who is connected to a city (units recover health only while supplied). V toggles the overlay.
 	var supply := Node3D.new()
@@ -25,6 +32,44 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	if not game_over:
 		_elapsed += delta
+	if _debug_label != null:
+		_debug_label.text = "FPS %d   player units %d   AI units %d" % [Engine.get_frames_per_second(),
+			get_tree().get_nodes_in_group("player_units").size(), get_tree().get_nodes_in_group("ai_units").size()]
+
+# ---------------------------------------------------------------------------
+# Debug / stress test.  F3 = FPS and unit counts.  F5 = spawn 100 infantry per side facing off.
+# ---------------------------------------------------------------------------
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_F3:
+			_toggle_debug_label()
+		elif event.keycode == KEY_F5 and not game_over:
+			_spawn_stress_armies(100)
+
+func _toggle_debug_label() -> void:
+	if _debug_label != null:
+		_debug_label.get_parent().queue_free()
+		_debug_label = null
+		return
+	var layer := CanvasLayer.new()
+	layer.layer = 10
+	add_child(layer)
+	_debug_label = Label.new()
+	_debug_label.position = Vector2(20.0, 260.0)
+	layer.add_child(_debug_label)
+
+func _spawn_stress_armies(per_side: int) -> void:
+	var scene: PackedScene = load("res://scenes/Infantry.tscn")
+	var cols: int = 10
+	for side in 2:
+		var is_player: bool = side == 0
+		var x0: float = -24.0 if is_player else 0.0
+		for i in per_side:
+			var unit: Unit = scene.instantiate()
+			unit.is_player_unit = is_player
+			add_child(unit)
+			unit.global_position = Vector3(x0 + float(i % cols) * 2.0, 0.0, -20.0 + float(floori(float(i) / float(cols))) * 2.0)
 
 func _on_player_defeated() -> void:
 	_end_game("DEFEAT", "Your city has been overrun.", Color(1.0, 0.4, 0.4))

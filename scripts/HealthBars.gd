@@ -26,6 +26,7 @@ func _on_draw() -> void:
 	var camera := get_viewport().get_camera_3d()
 	if camera == null:
 		return
+	var view := Rect2(Vector2.ZERO, get_viewport().get_visible_rect().size).grow(30.0)
 	for group in ["player_units", "ai_units"]:
 		for unit: Unit in get_tree().get_nodes_in_group(group):
 			if not is_instance_valid(unit):
@@ -37,6 +38,8 @@ func _on_draw() -> void:
 			if camera.is_position_behind(top):
 				continue
 			var centre: Vector2 = camera.unproject_position(top)
+			if not view.has_point(centre):
+				continue
 			var half_width: float = absf(camera.unproject_position(top + Vector3(unit.pick_radius, 0.0, 0.0)).x - centre.x)
 			var width: float = maxf(MIN_BAR_WIDTH, half_width * 2.0)
 			var rect := Rect2(centre.x - width * 0.5, centre.y - BAR_HEIGHT, width, BAR_HEIGHT)
